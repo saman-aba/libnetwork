@@ -5,15 +5,53 @@
 #include <stdio.h>
 #include <arpa/inet.h>
 #include <netinet/ip.h>
-
+#include "net.h"
+#include <glib-2.0/glib.h>
 static sctp_sock_t sk;
-void sctp_handle_pkt_receive(char *pkt, unsigned int pkt_size,
+
+static GHashTable *fragment_tbl;
+
+/*
+	Hash table to keep track of fragmented packets
+*/
+	
+typedef struct _fragment_key {
+	uint16_t s_port;
+	uint16_t d_port;
+	uint32_t verification_tag;
+	uint16_t sid;
+	uint32_t ssn;
+	uint8_t  ubit;
+} fragment_key;
+
+static gint _fragment_compare( gconstpointer k1, gconstpointer k2)
+{
+	const fragment_key *key1 = ( const fragment_key *)k1;
+	const fragment_key *key2 = ( const fragment_key *)k2;
+
+	return !!( ( key1->s_port == key2->s_port) &&
+		( key1->d_port == key2->d_port) &&
+		( key1->verification_tag == key2->verification_tag) &&
+		( key1->sid == key2->sid) &&
+		( key1->ssn == key2->ssn) &&
+		( key1->ubit == key2->ubit));
+}
+
+static uint32_t fragment_hash( const void *k)
+{
+	const fragment_key *key = ( const fragment_key *)k;
+	return key->s_port ^ key->d_port ^ key->verification_tag ^
+		key->sid ^ key->ssn ^ key->ubit;
+}
+
+void sctp_handle_pkt_receive( char *pkt, unsigned int pkt_size,
 		unsigned int src_ip,
 		unsigned int dst_ip){
 	if(!sctp_parse_pkt(pkt, pkt_size, NULL))
 		return; /* Invalid packet */
 }
-int sctp_parse_pkt(const char *in, unsigned in_len, sctp_pkt_t *out){
+
+int sctp_parse_pkt( const char *in, unsigned in_len, sctp_pkt_t *out){
 	
 	int ret = 0;
 	unsigned nb_chnk = 0;
@@ -22,13 +60,13 @@ int sctp_parse_pkt(const char *in, unsigned in_len, sctp_pkt_t *out){
 	unsigned rem = 0;
 	int pad = 0;
 
-	out->cmn_hdr = (sctp_cmn_hdr_t*)in;
+	out->cmn_hdr = ( sctp_cmn_hdr_t*)in;
 	offt += SCTP_COMMON_HEADER_SIZE;
 	rem = in_len - offt;
 	
 	while(rem){
 		 
-		out->chunks[nb_chnk] = (sctp_chunk_t *)(in + offt);
+		out->chunks[nb_chnk] = ( sctp_chunk_t *)(in + offt);
 		length = ntohs(out->chunks[nb_chnk]->len);
 		if(length <= 0)
 			return -1;
@@ -117,17 +155,16 @@ sctp_data_chunk_t *sctp_parse_data_chunk(char *in, unsigned len){
 	
 }
 
+extern int ip_send_frame( struct pkt_buffer *buf, char proto);
 
-extern int ip_send_frame(char *buf, unsigned buf_len, const char *addr, char proto);
-
-int sctp_send(const char *buf, unsigned buf_len, 
-		const char *addr, uint16_t port, char type, char flags)
+int sctp_send( struct pkt_buffer *pkt, char type, char flags)
 {
 	struct sctp_cmn_hdr 		*sctp_cmn;
 	struct sctp_chunk		*chunk;
 	struct sctp_data_chunk_hdr	*data_chunk_hdr;
-
-	unsigned 			hdr_sz;
+	
+	unsigned 			pl_len = 0;
+	unsigned 			hdr_sz = 0;
 
 	char 				*frame = NULL;
 	unsigned 			frame_len = 0;
@@ -139,10 +176,10 @@ int sctp_send(const char *buf, unsigned buf_len,
 		case SCTP_DATA_CHUNK:{
 			hdr_sz += sizeof(struct sctp_data_chunk_hdr) +
 				sizeof(struct sctp_chunk);
-			frame_len = buf_len + hdr_sz;
+			pl_len = pkt->data_len;
+			frame_len = pkt->data_len + hdr_sz;
 			frame = malloc( frame_len);
 			memset( frame, 0, frame_len);
-
 			sctp_cmn = (struct sctp_cmn_hdr *)frame;
 			chunk = ( struct sctp_chunk *)(frame + sizeof(struct sctp_cmn_hdr));
 			break;
@@ -151,20 +188,24 @@ int sctp_send(const char *buf, unsigned buf_len,
 			return -1;
 	}
 
-	memcpy(frame + hdr_sz, buf, buf_len);
-	sctp_cmn->src_port 		= htons(4001);
-	sctp_cmn->dst_port 		= port;
-	sctp_cmn->verification_tag	= buf_len + hdr_sz;
+	memcpy(frame + hdr_sz, pkt->data, pkt->data_len);
+	free( pkt->data);
+	
+	pkt->data 			= frame;
+	pkt->data_len 			= frame_len;
+
+	sctp_cmn->src_port 		= pkt->l4_sport;
+	sctp_cmn->dst_port 		= pkt->l4_dport;
+
+	sctp_cmn->verification_tag	= pkt->data_len + hdr_sz;
 	sctp_cmn->checksum		= 0;
 
-	chunk->type = type;
-	chunk->flags = flags;
-	chunk->len = htons(buf_len + 
-			sizeof(struct sctp_chunk) +
-			sizeof(struct sctp_data_chunk_hdr));
-	
+	chunk->type 			= type;
+	chunk->flags 			= flags;
+	chunk->len 			= htons( pl_len + 
+					 sizeof( struct sctp_data_chunk_hdr) + 
+					 sizeof( struct sctp_chunk));	
 
-	return ip_send_frame( frame, frame_len, addr, IPPROTO_SCTP);
+	return ip_send_frame( pkt, IPPROTO_SCTP);
 }
-
 

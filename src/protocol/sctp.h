@@ -2,7 +2,7 @@
 #define __SCTP_H__
 
 #include <stdlib.h>
-
+#include "net.h"
 typedef struct sctp_pkt		sctp_pkt_t;
 typedef struct sctp_cmn_hdr 	sctp_cmn_hdr_t;
 typedef struct sctp_chunk	sctp_chunk_t;
@@ -180,6 +180,7 @@ sctp_parse_init_chunk(char *in);
 int
 sctp_parse_pkt(const char *in, unsigned in_len, sctp_pkt_t *out);
 
+int sctp_send( struct pkt_buffer *pkt, char type, char flags);
 void 
 sctp_handle_pkt_receive(char *pkt, unsigned int pkt_size,
 			unsigned int src_ip,
