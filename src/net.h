@@ -1,18 +1,32 @@
-#ifndef __L3_H__
-#define __L3_H__
+#ifndef __NETWORK_H__
+#define __NETWORK_H__
 
+#include <stdint.h>
 #include <string.h>
 #include <pthread.h>
 #include <stdbool.h>
 
 #include "tunnel.h"
 
+
 #define NET_ETH_HEADER_LEN	14
 #define NET_MTU			1560
+
+/* Flags */
+#define NET_CAP_FRM		0x00000001
+#define NET_ENBL_TNL		0x00000002
+#define NET_ENBL_TX		0x00000004
+
 
 struct pkt_buffer{
 	struct pkt_buffer 	*next;
 	struct pkt_buffer 	*prev;
+
+	uint8_t			enable_cap;
+	
+	uint8_t			enable_tx;
+	uint8_t			enable_tnl;
+	uint16_t		tnl_idx;
 	
 	unsigned int		len,
 				data_len,
@@ -24,6 +38,12 @@ struct pkt_buffer{
 				ethernet_header,
 				network_header,
 		 		transport_header;
+
+	uint32_t		s_addr;
+	uint32_t		d_addr;
+
+	uint16_t		l4_sport;
+	uint16_t		l4_dport;
 
 	unsigned char 		*tail,
 				*end,
@@ -120,5 +140,7 @@ pkt_set_transport_header(struct pkt_buffer *pkt, const int offt)
 {
 	pkt->transport_header += offt;
 }
+
+void network_pkt_buffer_free( struct pkt_buffer *);
 
 #endif
