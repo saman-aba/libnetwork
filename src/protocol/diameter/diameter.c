@@ -1,10 +1,12 @@
 #include "diameter.h"
+#include "protocol/sctp.h"
 #include <stdlib.h>
 #include <assert.h>
 #include <stdio.h>
 #include "val_str.h"
 #include <arpa/inet.h>
 #include <jansson.h>
+#include "net.h"
 
 static const val_str avp_type_table[] = {
 	{OctetString, 			"OctetString"},
@@ -89,15 +91,19 @@ static const val_str avp_display[] = {
 };
 
 
+int _serialize_diameter_avp( struct diameter_avp *avp, char *buf);
+
 static int _create_os_avp( struct diameter_avp *avp, char *val, int val_sz)
 {
 	avp->data.octetstring = malloc( val_sz + 1);
 	memcpy( avp->data.octetstring, val, val_sz);
 	avp->data.octetstring[ val_sz] = '\0';
 
+
 	AVP_HEADER(avp).length += val_sz;
 	avp->pad = AVP_DATA_PAD( avp->data.octetstring);
 
+	free(val);
 	return 0;
 }
 static int _create_i32_avp( struct diameter_avp *avp, int32_t val, int val_sz)
@@ -136,7 +142,6 @@ static int _create_avp_data( struct diameter_avp *avp, avp_type type, uint64_t d
 	switch( type)
 	{
 		case Unknown:
-
 			break;
 		case OctetString:
 			_create_os_avp( avp, ( char *)data, data_sz);
@@ -272,6 +277,50 @@ diameter_remove_avp(struct diameter_pkt *pkt, unsigned short index)
 	}
 }
 
+typedef int( *os_format_fn)( char **, char *);
+//typedef char *( os_formatter_fn)( char *);
+int vplmn_os_formatter( char **vplmn, char *i_str)
+{
+	
+	int len = 3;
+	*vplmn  = malloc(4);
+	
+	(*vplmn)[0] = ( i_str[0] - '0') << 4 | ( i_str[1] - '0');
+	(*vplmn)[1] = ( i_str[2] - '0' < 9 ? (i_str[2] - '0') : 0x0f) << 4 | ( i_str[3] - '0');
+	(*vplmn)[2] = ( i_str[4] - '0') << 4 | ( i_str[5] - '0');
+	(*vplmn)[3] = '\0';
+
+	return len;
+}
+
+int default_os_formatter( char **o_str, char *i_str)
+{
+	int len = strlen( i_str);
+
+	*o_str = malloc( len + 1);
+	memcpy( (*o_str), i_str, len);
+	(*o_str)[len] = '\0';
+	
+	return len;
+}
+
+
+os_format_fn override_os_formatter( int type)
+{
+	switch(type)
+	{
+		case 1407:
+			return vplmn_os_formatter;
+		default:
+			return default_os_formatter;
+	}
+}
+
+int read_os_json_value( char **o_str, char *i_str, os_format_fn formatter)
+{
+	return formatter( o_str, i_str);
+}
+
 int _parse_json_avp_array( struct diameter_avp **arr, json_t *avp_arr)
 {
 	int			ret = 0;
@@ -322,12 +371,14 @@ int _parse_json_avp_array( struct diameter_avp **arr, json_t *avp_arr)
 		switch( json_typeof( avp_value_obj))
 		{
 			case JSON_STRING:
-				value = ( char *)json_string_value( avp_value_obj);
-				value_sz = strlen(value);
-				if(avpCode == 1407)
-					value_sz = 3;
+			{
+				value_sz  = read_os_json_value( ( char **)&value, 
+					(char *)json_string_value( avp_value_obj),
+					override_os_formatter(avpCode));
 				break;
+			}
 			case JSON_INTEGER:
+			{
 				value = json_integer_value( avp_value_obj);
 				if( type == Integer64 ||
 					type == Unsigned64 ||
@@ -336,22 +387,26 @@ int _parse_json_avp_array( struct diameter_avp **arr, json_t *avp_arr)
 				else
 					value_sz = 4;
 				break;
+			}
 			case JSON_ARRAY:
+			{
 				int inner_arr_sz = json_array_size( avp_value_obj);
 				struct diameter_avp **inner_arr = 
-					malloc( inner_arr_sz * 
-						sizeof(void *) + 1);
-				memset( inner_arr, 0, inner_arr_sz * sizeof( void *) + 1);
+					malloc( ( inner_arr_sz +1)* 
+						sizeof(void *));
+				memset( inner_arr, 0, ( inner_arr_sz + 1)* sizeof( void *));
 
 				value_sz = _parse_json_avp_array( inner_arr, avp_value_obj);
-				value = (void *)inner_arr;
+				value = ( uint64_t)inner_arr;
 				break;
+			}
 		}
 
 		ret += value_sz + AVP_HEADER_SIZE + ( 4 - value_sz %4)%4 ; // TODO : fix it
 
 		arr[index] = diameter_new_avp( type, avpCode, avpFlags, 
 			value, value_sz, vendorId);
+		value = 0;
 
 	}
 	return ret;
@@ -408,45 +463,18 @@ diameter_read_json_packet( const char *buf)
 	dimObj = json_object_get( json, "diameter");
 	diameter_parse_json_header( pkt, dimObj);
 	diameter_parse_json_avps( pkt, dimObj);
+
+	json_decref( dimObj);
+	json_decref( json);
 	
 	return pkt;
 }
 
-typedef char *( *os_format_fn)( char *, int *);
-//typedef char *( os_formatter_fn)( char *);
-char *vplmn_os_formatter( char *vplmni, int *len)
-{
-	char *ret = malloc(3);
-	ret[0] = 0x14;
-	ret[1] = 0xf8;
-	ret[2] = 0x50;
-	*len = 3;
-	return ret;
-}
 
-char *default_os_formatter( char *str, int *len)
+static int _serialize_octetstring( char *buf, char *ostr, int len, int pad)
 {
-	return str;
-}
-
-
-os_format_fn override_os_formatter( int type)
-{
-	switch(type)
-	{
-		case 1407:
-			return vplmn_os_formatter;
-		default:
-			return default_os_formatter;
-	}
-}
-
-static int _serialize_octetstring( char *buf, char *ostr, int len, int pad, 
-		os_format_fn formatter)
-{
-	char *str = formatter(ostr, &len);
 	int ret = len;
-	memcpy( buf, str, len);
+	memcpy( buf, ostr, len);
 	if(pad){
 		memset( buf + ret, 0, pad);	
 		ret += pad;
@@ -530,7 +558,7 @@ static int _serialize_avp_header( struct diameter_avp *avp, char *buf)
 	
 	hdr.length = (( avp->header.length & 0x0000ff) << 16) 	|
 		( avp->header.length & 0x00ff00)		|
-		( avp->header.length & 0xff0000);
+		(( avp->header.length & 0xff0000) >> 16);
 
 
 	memcpy( buf, &hdr, sizeof(struct diameter_avp_hdr));
@@ -544,32 +572,48 @@ static int _serialize_avp_data( struct diameter_avp *avp, char *buf)
 	switch( avp->type)
 	{
 		case OctetString:
+		{
 			int size = avp->header.length - AVP_HEADER_SIZE -
 				((avp->header.flags & 0x80) ? 4: 0);
 			ret = _serialize_octetstring( buf, avp->data.octetstring, 
-				size , avp->pad, override_os_formatter(avp->header.code));
+				size , avp->pad);
 			break;
+		}
 		case Integer32:
+		{
 			ret = _serialize_integer32( buf, avp->data.int32);
 			break;
+		}
 		case Integer64:
+		{
 			ret = _serialize_integer64( buf, avp->data.int64);
 			break;
+		}
 		case Unsigned32:
+		{
 			ret = _serialize_unsigned32( buf, avp->data.unsigned32);
 			break;
+		}
 		case Unsigned64:
+		{
 			ret = _serialize_unsigned64( buf, avp->data.unsigned64);
 			break;
+		}
 		case Float32:
+		{
 			ret = _serialize_float32( buf, avp->data.float32);
 			break;
+		}
 		case Float64:
+		{
 			ret = _serialize_float64( buf, avp->data.float64);
 			break;
+		}
 		case Grouped:
+		{
 			ret = _serialize_group( buf, avp->data.group);
 			break;
+		}
 	}
 	return ret;
 }
@@ -594,11 +638,13 @@ int diameter_serialize_packet( const struct diameter_pkt *pkt, char *buf)
 	tmphdr.version 		= pkt->header.version;
 	tmphdr.length 		= ((pkt->header.length & 0x0000ff) << 16) 	|
 				((pkt->header.length & 0x00ff00))		|
-				((pkt->header.length & 0xff0000));
+				((pkt->header.length & 0xff0000) >> 16);
+
 	tmphdr.flags 		= pkt->header.flags;
 	tmphdr.command_code 	= ((pkt->header.command_code & 0x0000ff) << 16) |
 				((pkt->header.command_code & 0x00ff00))		|
-				((pkt->header.command_code & 0xff0000));
+				((pkt->header.command_code & 0xff0000) >> 16);
+
 	tmphdr.application_id 	= htonl(pkt->header.application_id);
 	tmphdr.hop_by_hop_id 	= htonl(pkt->header.hop_by_hop_id);
 	tmphdr.end_to_end_id 	= htonl(pkt->header.end_to_end_id);
@@ -678,10 +724,47 @@ diameter_deserialize_packet(const char *buf, int buf_size, struct diameter_pkt *
 }
 
 
+int diameter_send( struct diameter_pkt *diam_pkt, 
+	const char *addr, uint16_t port, char proto, 
+	uint64_t flags)
+{
+	char 		*buf = NULL;
+	uint16_t 	buf_len = 0;
+	int 		result;
+	struct pkt_buffer *pkt;
+
+	pkt = malloc( sizeof( struct pkt_buffer));
+	
+	pkt->tnl_idx 	= 0;
+	pkt->data_len 	= diam_pkt->header.length;
+	pkt->data 	= malloc( pkt->data_len);
+
+	pkt->d_addr	= inet_addr(addr);
+	pkt->l4_sport	= htons(4001);
+	pkt->l4_dport	= htons(port);
+
+	if( flags & NET_CAP_FRM)
+		pkt->enable_cap = 1;
+	if( flags & NET_ENBL_TNL)
+		pkt->enable_tnl = 1;
+
+	result = diameter_serialize_packet( diam_pkt, pkt->data);
+
+	if( result != pkt->data_len)
+	{
+		printf("Something went wrong.");
+		return -1;
+	}
+
+	sctp_send( pkt, SCTP_DATA_CHUNK, 3);
+	
+	return result;
+}
+
 void _print_avp( const struct diameter_avp **avp_l, int indent)
 {	
 	int index = 0;
-	struct diameter_avp *avp;
+	const struct diameter_avp *avp;
 
 	while(avp_l[index])
 	{
@@ -705,7 +788,7 @@ void _print_avp( const struct diameter_avp **avp_l, int indent)
 				printf(" %d\n", avp->data.int32 );
 				break;
 			case Integer64:
-				printf( " %d\n", avp->data.int64);
+				printf( " %ld\n", avp->data.int64);
 			case Grouped:
 				_print_avp( (const struct diameter_avp **)avp->data.group, 1);
 				break;
@@ -728,5 +811,4 @@ diameter_print_packet(const struct diameter_pkt *pkt)
 	_print_avp( (const struct diameter_avp **)pkt->list, 0);
 	printf("\n");
 }
-
 

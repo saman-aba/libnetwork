@@ -26,6 +26,13 @@
 #include "avp.h"
 #include "diameter_dict.h"
 
+
+
+/* L4 Protos */
+#define DIAMETER_OVER_SCTP			0
+#define DIAMETER_OVER_TCP			1
+
+
 #define DIAMETER_MULTI_ROUND_AUTH               1001
 
 #define DIAMETER_SUCCESS                        2001
@@ -137,7 +144,7 @@ struct diameter_avp{
 			double			float64;
 			void			*group;
 		} data;
-	}
+	};
 };
 
 struct diameter_pkt{
@@ -216,6 +223,8 @@ diameter_serialize_packet(const struct diameter_pkt *pkt, char *buf);
 void
 diameter_deserialize_packet(const char *buf, int buf_size, struct diameter_pkt *pkt);
 
+int 
+diameter_send( struct diameter_pkt *pkt, const char *addr, uint16_t port, char proto, uint64_t flags);
 void
 diameter_print_packet(const struct diameter_pkt *pkt);
 
