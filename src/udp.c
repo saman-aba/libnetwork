@@ -105,8 +105,7 @@ void udp_client_stop()
 
 int udp_pkt_tnl(struct tnl_stream *ts)
 {
-	write(ts->fd, ts->cur_data, ts->cur_data_sz);
-	return 0;
+	return write(ts->fd, ts->cur_data, ts->cur_data_sz);
 }
 
 

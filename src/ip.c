@@ -4,7 +4,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <net/ethernet.h>
-
+#include "net.h"
 static void
 l3_handle_ip_pkt_receive_from_l2(ip_hdr_t *pkt, unsigned int pkt_size){
 
@@ -27,18 +27,20 @@ void l3_handle_pkt(char *pkt, unsigned int pkt_size, int protocol_type){
 	l3_handle_pkt_receive_from_l2(pkt, pkt_size, protocol_type);
 }
 
-extern int ether_send_frame(char *buf, unsigned buf_len, const char *addr, short proto);
+extern int ether_send_frame( struct pkt_buffer *, short);
 
-int ip_send_frame(char *buf, unsigned buf_len, const char *addr, char proto)
+int ip_send_frame( struct pkt_buffer *pkt, char proto)
 {
 	struct iphdr	*ip;
 	char 		*frame = NULL;
 	unsigned 	frame_len = 0;
 
-	frame_len = buf_len + sizeof(struct iphdr);
-	frame = malloc(frame_len);
-	memcpy(frame + sizeof(struct iphdr), buf, buf_len);
-	free(buf);
+	frame_len = pkt->data_len + sizeof(struct iphdr);
+	frame = malloc( frame_len);
+	memcpy(frame + sizeof(struct iphdr), pkt->data, pkt->data_len);
+	free( pkt->data);
+	pkt->data = frame;
+	pkt->data_len = frame_len;
 
 	ip = (struct iphdr *)frame;
 	
@@ -52,8 +54,8 @@ int ip_send_frame(char *buf, unsigned buf_len, const char *addr, char proto)
 	ip->protocol 	= proto;
 	ip->check	= 0;
 	ip->saddr	= inet_addr("192.168.93.57"); // TODO : Must get this from host info
-	ip->daddr	= inet_addr(addr);
+	ip->daddr	= pkt->d_addr;
 
-	return ether_send_frame(frame, frame_len, addr, ETH_P_IP);
+	return ether_send_frame( pkt, ETH_P_IP);
 }
 

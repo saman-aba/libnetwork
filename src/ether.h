@@ -13,8 +13,6 @@ struct ethernet_hdr{
 	unsigned short		proto;
 } __attribute__((packed));
 
-void
-ethernet_frame_transmit(int sockfd, struct pkt_buffer *);
 
 
 #endif

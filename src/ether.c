@@ -4,18 +4,17 @@
 #include <net/ethernet.h>
 #include <stdlib.h>
 #include <string.h>
+#include "net.h"
+extern int network_transmit_frame( struct pkt_buffer *buf); 
 
-extern int network_transmit_frame( char *buf, unsigned buf_len); 
-int ether_send_frame(char *buf, unsigned buf_len, const char *addr, short proto)
+int ether_send_frame( struct pkt_buffer *pkt, short proto)
 {
 	struct ethhdr 	*eth;
 	char		*frame = NULL;
 	unsigned	frame_len = 0;
 
-	frame_len = buf_len + sizeof(struct ethhdr);
+	frame_len = pkt->data_len + sizeof(struct ethhdr);
 	frame = malloc( frame_len);
-	memcpy( frame + sizeof(struct ethhdr), buf, buf_len);
-	free(buf);
 
 	eth = (struct ethhdr *)frame;
 
@@ -31,5 +30,12 @@ int ether_send_frame(char *buf, unsigned buf_len, const char *addr, short proto)
 	memcpy(eth->h_dest, d_mac /*Must be taken from lookup table*/, ETH_ALEN);
 	eth->h_proto = htons(proto);
 
-	return network_transmit_frame( frame, frame_len);
+	memcpy( frame + sizeof(struct ethhdr), pkt->data, pkt->data_len);
+	
+	pkt->ethernet_header = 0;
+	free( pkt->data);
+	pkt->data_len = frame_len;
+	pkt->data = frame;
+
+	return network_transmit_frame( pkt);
 }
